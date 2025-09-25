@@ -199,7 +199,7 @@ jobs:
           fi
       
       - name: Upload health check results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: health-check-${{ github.event.inputs.target_environment }}
           path: health-check-report.txt
@@ -307,7 +307,7 @@ jobs:
           echo "Timestamp: $(date)" >> deployment-summary.txt
       
       - name: Upload deployment results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: deployment-${{ github.event.inputs.target_environment }}
           path: |
@@ -459,7 +459,7 @@ jobs:
           EOF
       
       - name: Upload maintenance report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: maintenance-${{ github.event.inputs.target_environment }}
           path: maintenance-summary.txt

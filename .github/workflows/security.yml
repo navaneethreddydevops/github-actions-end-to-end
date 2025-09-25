@@ -5,7 +5,7 @@ name: Security Scanning Workflow
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master, develop, "copilot/**" ]
   pull_request:
     branches: [ main, master ]
   schedule:
@@ -52,7 +52,7 @@ jobs:
       
       - name: Install security scanning tools
         run: |
-          pip install bandit[toml] semgrep safety
+          pip install bandit[toml] safety
       
       - name: Run Bandit security linter
         run: |
@@ -243,8 +243,8 @@ jobs:
       
       - name: Install secret scanning tools
         run: |
-          # Install truffleHog for secret detection
-          pip install truffleHog
+          # Install trufflehog for secret detection
+          pip install trufflehog
           
           # Install detect-secrets
           pip install detect-secrets
@@ -254,7 +254,7 @@ jobs:
           echo "🔍 Running TruffleHog secret scan"
           
           # Scan repository history for secrets
-          trufflehog --json filesystem . > trufflehog-results.json || true
+          trufflehog filesystem . --json > trufflehog-results.json || true
           trufflehog filesystem . > trufflehog-results.txt || true
           
           echo "TruffleHog scan completed"

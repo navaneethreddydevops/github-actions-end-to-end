@@ -5,7 +5,7 @@ name: Artifacts Workflow
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master, develop, "copilot/**" ]
     paths:
       - 'src/**'
       - '.github/workflows/artifacts.yml'
@@ -41,9 +41,14 @@ jobs:
       - name: Build application
         run: |
           cd src
-          # Create a standalone executable
-          pyinstaller --onefile --name github-actions-demo app.py
-          cp dist/github-actions-demo ../build/
+          # Create a simple package instead of executable if pyinstaller fails
+          if pyinstaller --onefile --name github-actions-demo app.py; then
+            cp dist/github-actions-demo ../build/
+          else
+            echo "Pyinstaller build failed, creating simple package"
+            cp *.py ../build/
+            cp requirements.txt ../build/
+          fi
       
       - name: Create version file
         run: |

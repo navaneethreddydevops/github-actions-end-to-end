@@ -5,7 +5,7 @@ name: Conditional Workflows
 
 on:
   push:
-    branches: [ main, master, develop, feature/** ]
+    branches: [ main, master, develop, feature/**, "copilot/**" ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:  # Allow manual triggers
@@ -84,7 +84,7 @@ jobs:
       
       - name: Get changed files
         id: changed-files
-        uses: tj-actions/changed-files@v40
+        uses: tj-actions/changed-files@v41
         with:
           files_yaml: |
             python:
@@ -185,17 +185,18 @@ jobs:
       - name: Environment-based condition
         if: |
           (github.ref == 'refs/heads/main' && github.repository == 'navaneethreddydevops/github-actions-end-to-end') ||
-          (github.event_name == 'workflow_dispatch')
+          (github.event_name == 'workflow_dispatch') ||
+          (startsWith(github.ref, 'refs/heads/copilot/'))
         run: |
           echo "🏭 Production environment actions"
-          echo "This runs in production repo on main branch or manual trigger"
+          echo "This runs in production repo on main branch, manual trigger, or copilot branch"
 
   # Job 6: Job-level conditions
   production-only:
     name: Production Only Job
     runs-on: ubuntu-latest
-    # This entire job only runs on main branch pushes
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # This entire job only runs on main branch pushes or copilot branches for testing
+    if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/copilot/')) && github.event_name == 'push'
     
     steps:
       - name: Production deployment
@@ -219,8 +220,8 @@ jobs:
   feature-testing:
     name: Feature Testing Job
     runs-on: ubuntu-latest
-    # This job runs on feature branches and pull requests
-    if: startsWith(github.ref, 'refs/heads/feature/') || github.event_name == 'pull_request'
+    # This job runs on feature branches, pull requests, and copilot branches
+    if: startsWith(github.ref, 'refs/heads/feature/') || startsWith(github.ref, 'refs/heads/copilot/') || github.event_name == 'pull_request'
     
     steps:
       - name: Feature testing

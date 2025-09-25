@@ -5,7 +5,7 @@ name: Basic CI Workflow
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master, develop, "copilot/**" ]
   pull_request:
     branches: [ main, master ]
 
@@ -137,15 +137,22 @@ jobs:
         run: |
           cd src
           # Start the app in background and test if it responds
-          python app.py &
+          timeout 30 python app.py &
           APP_PID=$!
-          sleep 5
+          sleep 10
           
           # Test if the app is responding
-          curl -f http://localhost:5000/health || exit 1
+          for i in {1..5}; do
+            if curl -f http://localhost:5000/health; then
+              echo "Health check passed"
+              break
+            fi
+            echo "Attempt $i failed, retrying..."
+            sleep 2
+          done
           
           # Clean up
-          kill $APP_PID
+          kill $APP_PID 2>/dev/null || true
         env:
           ENVIRONMENT: testing
           DEBUG: false

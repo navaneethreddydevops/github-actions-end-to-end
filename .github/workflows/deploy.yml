@@ -8,7 +8,7 @@ name: Deployment Workflow
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, "copilot/**" ]
     tags:
       - 'v*'
   pull_request:
@@ -58,6 +58,10 @@ jobs:
             echo "should-deploy=true" >> $GITHUB_OUTPUT
             echo "target-env=staging" >> $GITHUB_OUTPUT
             echo "version=latest" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" =~ refs/heads/copilot/.* ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "target-env=development" >> $GITHUB_OUTPUT
+            echo "version=copilot-test" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event.pull_request.merged }}" == "true" ]]; then
             echo "should-deploy=true" >> $GITHUB_OUTPUT
             echo "target-env=staging" >> $GITHUB_OUTPUT

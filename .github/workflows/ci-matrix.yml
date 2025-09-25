@@ -5,7 +5,7 @@ name: Matrix Build Workflow
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, "copilot/**" ]
     paths: 
       - 'src/**'
       - '.github/workflows/ci-matrix.yml'

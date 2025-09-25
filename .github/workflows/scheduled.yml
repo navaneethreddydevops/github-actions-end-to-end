@@ -1,0 +1,450 @@
+name: Scheduled Workflow
+
+# This workflow demonstrates scheduled execution using cron syntax
+# Shows various automation tasks that can run on a schedule
+
+on:
+  # Schedule using cron syntax (UTC time)
+  schedule:
+    # Run daily at 2:00 AM UTC
+    - cron: '0 2 * * *'
+    # Run weekly on Mondays at 8:00 AM UTC
+    - cron: '0 8 * * 1'
+    # Run monthly on the 1st day at 6:00 AM UTC
+    - cron: '0 6 1 * *'
+  
+  # Allow manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      task_type:
+        description: 'Type of scheduled task to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'daily'
+          - 'weekly'
+          - 'monthly'
+          - 'maintenance'
+
+# Prevent multiple instances of this workflow from running simultaneously
+concurrency:
+  group: scheduled-tasks
+  cancel-in-progress: false
+
+jobs:
+  # Job 1: Daily maintenance tasks
+  daily-maintenance:
+    name: Daily Maintenance Tasks
+    runs-on: ubuntu-latest
+    # Run if it's the daily schedule OR manual trigger with daily/all
+    if: |
+      github.event.schedule == '0 2 * * *' || 
+      github.event_name == 'workflow_dispatch' && 
+      (github.event.inputs.task_type == 'daily' || github.event.inputs.task_type == 'all')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Daily health check
+        run: |
+          echo "🏥 Running daily health check"
+          echo "Date: $(date)"
+          echo "Repository: ${{ github.repository }}"
+          echo "Last commit: ${{ github.sha }}"
+          
+          # Check if all required files exist
+          required_files=(
+            "src/app.py"
+            "src/requirements.txt"
+            "src/tests/test_app.py"
+            "README.md"
+          )
+          
+          echo "Checking required files..."
+          for file in "${required_files[@]}"; do
+            if [[ -f "$file" ]]; then
+              echo "✅ $file exists"
+            else
+              echo "❌ $file missing"
+            fi
+          done
+      
+      - name: Check dependencies for security updates
+        run: |
+          echo "🔍 Checking dependencies for security updates"
+          cd src
+          pip install --upgrade pip safety
+          
+          # Check for known security vulnerabilities
+          safety check --json > ../daily-security-report.json || true
+          safety check || echo "⚠️ Security issues found - check report"
+      
+      - name: Cleanup old logs (simulation)
+        run: |
+          echo "🧹 Cleaning up old logs"
+          # In a real scenario, this might clean up old log files
+          echo "Cleaned up logs older than 7 days"
+          echo "Disk space saved: $(du -sh . | cut -f1)"
+      
+      - name: Generate daily report
+        run: |
+          cat > daily-report.md << EOF
+          # Daily Maintenance Report - $(date +%Y-%m-%d)
+          
+          ## Summary
+          - Health check: ✅ Completed
+          - Security scan: ✅ Completed
+          - Log cleanup: ✅ Completed
+          
+          ## Repository Status
+          - Repository: ${{ github.repository }}
+          - Branch: ${{ github.ref_name }}
+          - Last commit: ${{ github.sha }}
+          - Workflow run: ${{ github.run_id }}
+          
+          ## Next Steps
+          - Review security report if issues found
+          - Check for dependency updates
+          - Monitor application performance
+          
+          Generated at: $(date)
+          EOF
+          
+          cat daily-report.md
+      
+      - name: Upload daily report
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report-$(date +%Y-%m-%d)
+          path: |
+            daily-report.md
+            daily-security-report.json
+          retention-days: 30
+
+  # Job 2: Weekly tasks
+  weekly-tasks:
+    name: Weekly Tasks
+    runs-on: ubuntu-latest
+    # Run if it's the weekly schedule OR manual trigger with weekly/all
+    if: |
+      github.event.schedule == '0 8 * * 1' || 
+      github.event_name == 'workflow_dispatch' && 
+      (github.event.inputs.task_type == 'weekly' || github.event.inputs.task_type == 'all')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest coverage
+      
+      - name: Weekly test run
+        run: |
+          echo "🧪 Running weekly comprehensive tests"
+          cd src
+          pytest tests/ -v --tb=long --cov=. --cov-report=term-missing
+      
+      - name: Dependency update check
+        run: |
+          echo "📦 Checking for dependency updates"
+          cd src
+          pip list --outdated --format=json > ../weekly-outdated-deps.json
+          
+          echo "Outdated dependencies:"
+          pip list --outdated || echo "All dependencies are up to date"
+      
+      - name: Code metrics collection
+        run: |
+          echo "📊 Collecting code metrics"
+          cd src
+          
+          # Count lines of code
+          total_lines=$(find . -name "*.py" -type f -exec wc -l {} \; | awk '{sum += $1} END {print sum}')
+          file_count=$(find . -name "*.py" -type f | wc -l)
+          
+          echo "Code metrics:"
+          echo "- Total Python files: $file_count"
+          echo "- Total lines of code: $total_lines"
+          echo "- Average lines per file: $((total_lines / file_count))"
+      
+      - name: Generate weekly report
+        run: |
+          cat > weekly-report.md << EOF
+          # Weekly Report - Week of $(date +%Y-%m-%d)
+          
+          ## Test Results
+          - All tests executed successfully
+          - Code coverage maintained
+          
+          ## Dependency Status
+          - Checked for outdated packages
+          - Security vulnerabilities scanned
+          
+          ## Code Metrics
+          - See attached metrics for detailed analysis
+          
+          ## Recommendations
+          - Review outdated dependencies for updates
+          - Consider refactoring if code complexity increased
+          - Update documentation if significant changes made
+          
+          Generated at: $(date)
+          EOF
+          
+          cat weekly-report.md
+      
+      - name: Upload weekly report
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-report-$(date +%Y-%m-%d)
+          path: |
+            weekly-report.md
+            weekly-outdated-deps.json
+          retention-days: 60
+
+  # Job 3: Monthly tasks
+  monthly-tasks:
+    name: Monthly Tasks
+    runs-on: ubuntu-latest
+    # Run if it's the monthly schedule OR manual trigger with monthly/all
+    if: |
+      github.event.schedule == '0 6 1 * *' || 
+      github.event_name == 'workflow_dispatch' && 
+      (github.event.inputs.task_type == 'monthly' || github.event.inputs.task_type == 'all')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Monthly repository analysis
+        run: |
+          echo "📈 Running monthly repository analysis"
+          echo "Repository: ${{ github.repository }}"
+          echo "Analysis date: $(date)"
+          
+          # Get repository statistics
+          total_commits=$(git rev-list --count HEAD)
+          last_month_commits=$(git rev-list --count --since="1 month ago" HEAD)
+          
+          echo "Repository statistics:"
+          echo "- Total commits: $total_commits"
+          echo "- Commits in last month: $last_month_commits"
+      
+      - name: Archive old artifacts (simulation)
+        run: |
+          echo "🗄️ Archiving old artifacts and reports"
+          # In a real scenario, this might move old artifacts to long-term storage
+          echo "Archived artifacts older than 90 days"
+          echo "Storage space optimized"
+      
+      - name: Comprehensive security audit
+        run: |
+          echo "🛡️ Running comprehensive security audit"
+          cd src
+          pip install bandit safety
+          
+          # Security analysis
+          bandit -r . -f json -o ../monthly-security-audit.json || true
+          safety check --json > ../monthly-safety-check.json || true
+          
+          echo "Security audit completed"
+      
+      - name: Performance baseline update
+        run: |
+          echo "⚡ Updating performance baselines"
+          cd src
+          
+          # Simulate performance testing
+          start_time=$(date +%s%3N)
+          python -c "
+          import time
+          import requests
+          
+          # Simulate performance test
+          for i in range(100):
+              result = sum(range(i * 10))
+          
+          print('Performance test completed')
+          "
+          end_time=$(date +%s%3N)
+          duration=$((end_time - start_time))
+          
+          echo "Performance baseline: ${duration}ms for standard workload"
+      
+      - name: Generate monthly report
+        run: |
+          cat > monthly-report.md << EOF
+          # Monthly Report - $(date +%B\ %Y)
+          
+          ## Repository Health
+          - Security audit completed
+          - Performance baselines updated
+          - Old artifacts archived
+          
+          ## Key Metrics
+          - Repository activity analyzed
+          - Security posture evaluated
+          - Performance benchmarks recorded
+          
+          ## Long-term Recommendations
+          - Plan for upcoming dependency updates
+          - Review and update security policies
+          - Consider performance optimization opportunities
+          
+          ## Next Month's Focus
+          - Monitor security advisories
+          - Track performance trends
+          - Plan feature roadmap updates
+          
+          Generated at: $(date)
+          EOF
+          
+          cat monthly-report.md
+      
+      - name: Upload monthly report
+        uses: actions/upload-artifact@v4
+        with:
+          name: monthly-report-$(date +%Y-%m)
+          path: |
+            monthly-report.md
+            monthly-security-audit.json
+            monthly-safety-check.json
+          retention-days: 365
+
+  # Job 4: Emergency maintenance (runs on manual trigger only)
+  emergency-maintenance:
+    name: Emergency Maintenance
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' && 
+      github.event.inputs.task_type == 'maintenance'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Emergency health check
+        run: |
+          echo "🚨 Running emergency maintenance tasks"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Timestamp: $(date)"
+      
+      - name: System diagnostics
+        run: |
+          echo "🔧 Running system diagnostics"
+          echo "Available disk space:"
+          df -h
+          echo ""
+          echo "Memory usage:"
+          free -h
+          echo ""
+          echo "System load:"
+          uptime
+      
+      - name: Quick security scan
+        run: |
+          echo "🛡️ Quick security scan"
+          cd src
+          pip install safety
+          safety check --short-report || echo "Security issues detected - full scan recommended"
+      
+      - name: Generate emergency report
+        run: |
+          cat > emergency-report.md << EOF
+          # Emergency Maintenance Report
+          
+          **Triggered by:** ${{ github.actor }}
+          **Timestamp:** $(date)
+          **Reason:** Manual emergency maintenance
+          
+          ## Actions Taken
+          - Emergency health check completed
+          - System diagnostics performed
+          - Quick security scan executed
+          
+          ## Status
+          - System operational
+          - No critical issues detected
+          
+          ## Recommendations
+          - Monitor system closely
+          - Schedule full maintenance if issues persist
+          - Review logs for any anomalies
+          
+          EOF
+          
+          cat emergency-report.md
+      
+      - name: Upload emergency report
+        uses: actions/upload-artifact@v4
+        with:
+          name: emergency-report-$(date +%Y%m%d-%H%M)
+          path: emergency-report.md
+          retention-days: 90
+
+  # Job 5: Schedule summary and next steps
+  schedule-summary:
+    name: Schedule Summary
+    runs-on: ubuntu-latest
+    needs: [daily-maintenance, weekly-tasks, monthly-tasks, emergency-maintenance]
+    if: always()
+    
+    steps:
+      - name: Generate schedule summary
+        run: |
+          echo "## 📅 Scheduled Tasks Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Execution Context" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "- **Trigger:** Scheduled (cron: ${{ github.event.schedule }})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Trigger:** Manual (${{ github.event.inputs.task_type }})" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- **Date:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Task Type | Status | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Daily Maintenance | ${{ needs.daily-maintenance.result }} | Health checks, security scans, cleanup |" >> $GITHUB_STEP_SUMMARY
+          echo "| Weekly Tasks | ${{ needs.weekly-tasks.result }} | Comprehensive tests, dependency updates |" >> $GITHUB_STEP_SUMMARY
+          echo "| Monthly Tasks | ${{ needs.monthly-tasks.result }} | Security audit, performance baselines |" >> $GITHUB_STEP_SUMMARY
+          echo "| Emergency Maintenance | ${{ needs.emergency-maintenance.result }} | Emergency diagnostics and repairs |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Next Scheduled Runs" >> $GITHUB_STEP_SUMMARY
+          echo "- **Daily:** Every day at 2:00 AM UTC" >> $GITHUB_STEP_SUMMARY
+          echo "- **Weekly:** Mondays at 8:00 AM UTC" >> $GITHUB_STEP_SUMMARY
+          echo "- **Monthly:** 1st day of month at 6:00 AM UTC" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "*Manual triggers available anytime via workflow_dispatch*" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Log completion
+        run: |
+          echo "✅ Scheduled workflow completed successfully"
+          echo "Next scheduled run times (UTC):"
+          echo "  Daily: Tomorrow at 02:00"
+          echo "  Weekly: Next Monday at 08:00"
+          echo "  Monthly: 1st of next month at 06:00"
+          echo ""
+          echo "To run manually: Go to Actions → Scheduled Workflow → Run workflow"

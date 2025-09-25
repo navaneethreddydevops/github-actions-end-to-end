@@ -1,0 +1,362 @@
+name: Manual Trigger Workflow
+
+# This workflow demonstrates manual triggers (workflow_dispatch)
+# and how to accept user inputs for interactive workflows
+
+on:
+  # Manual trigger with custom inputs
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - 'development'
+          - 'staging'
+          - 'production'
+      
+      version:
+        description: 'Application version to deploy'
+        required: true
+        default: 'latest'
+        type: string
+      
+      run_tests:
+        description: 'Run tests before deployment'
+        required: false
+        default: true
+        type: boolean
+      
+      deployment_strategy:
+        description: 'Deployment strategy'
+        required: false
+        default: 'blue-green'
+        type: choice
+        options:
+          - 'blue-green'
+          - 'rolling'
+          - 'recreate'
+      
+      notify_teams:
+        description: 'Notify teams after deployment'
+        required: false
+        default: false
+        type: boolean
+      
+      custom_message:
+        description: 'Custom deployment message'
+        required: false
+        default: 'Manual deployment triggered'
+        type: string
+
+jobs:
+  # Job 1: Display input parameters
+  display-inputs:
+    name: Display Input Parameters
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Display all inputs
+        run: |
+          echo "## 📋 Manual Trigger Inputs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ github.event.inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`${{ github.event.inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run Tests | \`${{ github.event.inputs.run_tests }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployment Strategy | \`${{ github.event.inputs.deployment_strategy }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Notify Teams | \`${{ github.event.inputs.notify_teams }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Custom Message | \`${{ github.event.inputs.custom_message }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger time:** $(date)" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Log trigger information
+        run: |
+          echo "🚀 Manual workflow triggered!"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref }}"
+
+  # Job 2: Conditional testing based on input
+  conditional-testing:
+    name: Conditional Testing
+    runs-on: ubuntu-latest
+    if: github.event.inputs.run_tests == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run tests
+        run: |
+          cd src
+          pytest tests/ -v
+          echo "✅ Tests completed successfully for version ${{ github.event.inputs.version }}"
+
+  # Job 3: Environment-specific configuration
+  environment-setup:
+    name: Setup ${{ github.event.inputs.environment }} Environment
+    runs-on: ubuntu-latest
+    needs: [display-inputs]
+    
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment }}
+      VERSION: ${{ github.event.inputs.version }}
+    
+    steps:
+      - name: Development environment setup
+        if: github.event.inputs.environment == 'development'
+        run: |
+          echo "🛠️ Setting up development environment"
+          echo "DEBUG=true" >> dev.env
+          echo "LOG_LEVEL=debug" >> dev.env
+          echo "DATABASE_URL=sqlite:///dev.db" >> dev.env
+          cat dev.env
+      
+      - name: Staging environment setup
+        if: github.event.inputs.environment == 'staging'
+        run: |
+          echo "🧪 Setting up staging environment"
+          echo "DEBUG=false" >> staging.env
+          echo "LOG_LEVEL=info" >> staging.env
+          echo "DATABASE_URL=postgresql://staging-db" >> staging.env
+          cat staging.env
+      
+      - name: Production environment setup
+        if: github.event.inputs.environment == 'production'
+        run: |
+          echo "🏭 Setting up production environment"
+          echo "DEBUG=false" >> prod.env
+          echo "LOG_LEVEL=warning" >> prod.env
+          echo "DATABASE_URL=postgresql://prod-db" >> prod.env
+          echo "MONITORING_ENABLED=true" >> prod.env
+          cat prod.env
+      
+      - name: Upload environment configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.environment }}-config
+          path: "*.env"
+          retention-days: 7
+
+  # Job 4: Deployment simulation with strategy
+  deployment:
+    name: Deploy with ${{ github.event.inputs.deployment_strategy }} Strategy
+    runs-on: ubuntu-latest
+    needs: [conditional-testing, environment-setup]
+    if: always() && (needs.conditional-testing.result == 'success' || needs.conditional-testing.result == 'skipped')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download environment config
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.environment }}-config
+      
+      - name: Blue-Green deployment
+        if: github.event.inputs.deployment_strategy == 'blue-green'
+        run: |
+          echo "🔵🟢 Executing Blue-Green deployment"
+          echo "1. Deploying to green environment..."
+          sleep 2
+          echo "2. Running health checks on green..."
+          sleep 2
+          echo "3. Switching traffic to green environment..."
+          sleep 1
+          echo "4. Blue-Green deployment completed!"
+      
+      - name: Rolling deployment
+        if: github.event.inputs.deployment_strategy == 'rolling'
+        run: |
+          echo "🔄 Executing Rolling deployment"
+          for i in {1..3}; do
+            echo "Rolling update batch $i/3..."
+            sleep 1
+          done
+          echo "Rolling deployment completed!"
+      
+      - name: Recreate deployment
+        if: github.event.inputs.deployment_strategy == 'recreate'
+        run: |
+          echo "♻️ Executing Recreate deployment"
+          echo "1. Stopping old version..."
+          sleep 1
+          echo "2. Deploying new version..."
+          sleep 2
+          echo "3. Starting new version..."
+          sleep 1
+          echo "Recreate deployment completed!"
+      
+      - name: Verify deployment
+        run: |
+          echo "✅ Deployment verification"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "Strategy: ${{ github.event.inputs.deployment_strategy }}"
+          echo "Health check: PASSED"
+
+  # Job 5: Post-deployment tasks
+  post-deployment:
+    name: Post-deployment Tasks
+    runs-on: ubuntu-latest
+    needs: [deployment]
+    if: success()
+    
+    steps:
+      - name: Run database migrations
+        if: github.event.inputs.environment != 'development'
+        run: |
+          echo "📊 Running database migrations for ${{ github.event.inputs.environment }}"
+          sleep 2
+          echo "Migration completed successfully"
+      
+      - name: Clear application cache
+        run: |
+          echo "🗑️ Clearing application cache"
+          echo "Cache cleared for version ${{ github.event.inputs.version }}"
+      
+      - name: Update monitoring dashboards
+        if: github.event.inputs.environment == 'production'
+        run: |
+          echo "📈 Updating monitoring dashboards"
+          echo "Production monitoring updated for version ${{ github.event.inputs.version }}"
+      
+      - name: Generate deployment report
+        run: |
+          echo "📄 Generating deployment report"
+          cat > deployment-report.md << EOF
+          # Deployment Report
+          
+          **Date:** $(date)
+          **Environment:** ${{ github.event.inputs.environment }}
+          **Version:** ${{ github.event.inputs.version }}
+          **Strategy:** ${{ github.event.inputs.deployment_strategy }}
+          **Triggered by:** ${{ github.actor }}
+          **Status:** ✅ Success
+          **Message:** ${{ github.event.inputs.custom_message }}
+          
+          ## Summary
+          - Tests run: ${{ github.event.inputs.run_tests }}
+          - Deployment completed successfully
+          - Post-deployment tasks completed
+          EOF
+          
+          cat deployment-report.md
+      
+      - name: Upload deployment report
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-report-${{ github.event.inputs.environment }}-${{ github.run_number }}
+          path: deployment-report.md
+
+  # Job 6: Team notifications
+  notifications:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [post-deployment]
+    if: github.event.inputs.notify_teams == 'true' && success()
+    
+    steps:
+      - name: Notify development team
+        if: github.event.inputs.environment == 'development'
+        run: |
+          echo "📧 Notifying development team"
+          echo "Subject: Development deployment completed"
+          echo "Message: ${{ github.event.inputs.custom_message }}"
+      
+      - name: Notify staging team
+        if: github.event.inputs.environment == 'staging'
+        run: |
+          echo "📧 Notifying staging team"
+          echo "Subject: Staging deployment completed"
+          echo "Version: ${{ github.event.inputs.version }}"
+      
+      - name: Notify production team
+        if: github.event.inputs.environment == 'production'
+        run: |
+          echo "📧 Notifying production team"
+          echo "🚨 PRODUCTION DEPLOYMENT ALERT 🚨"
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "Strategy: ${{ github.event.inputs.deployment_strategy }}"
+          echo "Message: ${{ github.event.inputs.custom_message }}"
+
+  # Job 7: Failure handling
+  failure-cleanup:
+    name: Cleanup on Failure
+    runs-on: ubuntu-latest
+    needs: [conditional-testing, environment-setup, deployment, post-deployment]
+    if: failure()
+    
+    steps:
+      - name: Rollback on failure
+        run: |
+          echo "🔙 Deployment failed, initiating rollback"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Failed version: ${{ github.event.inputs.version }}"
+          echo "Rollback completed"
+      
+      - name: Notify on failure
+        run: |
+          echo "🚨 DEPLOYMENT FAILURE ALERT"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Please check the workflow logs for details"
+
+  # Job 8: Final summary
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [display-inputs, conditional-testing, environment-setup, deployment, post-deployment, notifications, failure-cleanup]
+    if: always()
+    
+    steps:
+      - name: Generate final summary
+        run: |
+          echo "## 🎯 Manual Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Strategy:** ${{ github.event.inputs.deployment_strategy }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Testing | ${{ needs.conditional-testing.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment Setup | ${{ needs.environment-setup.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployment | ${{ needs.deployment.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Post-deployment | ${{ needs.post-deployment.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Notifications | ${{ needs.notifications.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.deployment.result }}" == "success" ]]; then
+            echo "### ✅ Deployment Status: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Deployment Status: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Custom Message:** ${{ github.event.inputs.custom_message }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Completed at:** $(date)" >> $GITHUB_STEP_SUMMARY

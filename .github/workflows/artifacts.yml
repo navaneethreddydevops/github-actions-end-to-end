@@ -1,0 +1,473 @@
+name: Artifacts Workflow
+
+# This workflow demonstrates artifact handling in GitHub Actions
+# Shows how to create, upload, download, and share artifacts between jobs
+
+on:
+  push:
+    branches: [ main, master, develop, "copilot/**" ]
+    paths:
+      - 'src/**'
+      - '.github/workflows/artifacts.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  # Job 1: Build and create artifacts
+  build-artifacts:
+    name: Build Application Artifacts
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Create build directory
+        run: mkdir -p build
+      
+      - name: Build application
+        run: |
+          cd src
+          # Create a simple package instead of executable if pyinstaller fails
+          if pyinstaller --onefile --name github-actions-demo app.py; then
+            cp dist/github-actions-demo ../build/
+          else
+            echo "Pyinstaller build failed, creating simple package"
+            cp *.py ../build/
+            cp requirements.txt ../build/
+          fi
+      
+      - name: Create version file
+        run: |
+          echo "Build Information" > build/build-info.txt
+          echo "=================" >> build/build-info.txt
+          echo "Version: 1.0.0" >> build/build-info.txt
+          echo "Build Date: $(date)" >> build/build-info.txt
+          echo "Git Commit: ${{ github.sha }}" >> build/build-info.txt
+          echo "Git Branch: ${{ github.ref_name }}" >> build/build-info.txt
+          echo "Built by: ${{ github.actor }}" >> build/build-info.txt
+      
+      - name: Create changelog
+        run: |
+          echo "# Changelog" > build/CHANGELOG.md
+          echo "" >> build/CHANGELOG.md
+          echo "## Version 1.0.0 - $(date +%Y-%m-%d)" >> build/CHANGELOG.md
+          echo "" >> build/CHANGELOG.md
+          echo "### Features" >> build/CHANGELOG.md
+          echo "- Basic Flask web application" >> build/CHANGELOG.md
+          echo "- Health check endpoint" >> build/CHANGELOG.md
+          echo "- Calculator API endpoint" >> build/CHANGELOG.md
+          echo "- Application info endpoint" >> build/CHANGELOG.md
+          echo "" >> build/CHANGELOG.md
+          echo "### Technical Details" >> build/CHANGELOG.md
+          echo "- Python 3.9" >> build/CHANGELOG.md
+          echo "- Flask 3.0.0" >> build/CHANGELOG.md
+          echo "- Comprehensive test suite" >> build/CHANGELOG.md
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-build
+          path: build/
+          retention-days: 30
+
+  # Job 2: Run tests and create test artifacts
+  test-artifacts:
+    name: Create Test Artifacts
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest-html pytest-json-report
+      
+      - name: Run tests with coverage and reports
+        run: |
+          cd src
+          mkdir -p ../test-reports
+          
+          # Run tests with multiple output formats
+          pytest tests/ \
+            --verbose \
+            --tb=short \
+            --cov=. \
+            --cov-report=html:../test-reports/coverage-html \
+            --cov-report=xml:../test-reports/coverage.xml \
+            --cov-report=term-missing \
+            --html=../test-reports/pytest-report.html \
+            --self-contained-html \
+            --json-report --json-report-file=../test-reports/pytest-report.json
+      
+      - name: Create test summary
+        run: |
+          echo "# Test Results Summary" > test-reports/test-summary.md
+          echo "" >> test-reports/test-summary.md
+          echo "**Test Run Date:** $(date)" >> test-reports/test-summary.md
+          echo "**Git Commit:** ${{ github.sha }}" >> test-reports/test-summary.md
+          echo "**Branch:** ${{ github.ref_name }}" >> test-reports/test-summary.md
+          echo "" >> test-reports/test-summary.md
+          
+          # Extract test count from JSON report
+          if [ -f test-reports/pytest-report.json ]; then
+            python3 << EOF
+          import json
+          with open('test-reports/pytest-report.json', 'r') as f:
+              data = json.load(f)
+          print(f"**Total Tests:** {data['summary']['total']}")
+          print(f"**Passed:** {data['summary']['passed']}")
+          print(f"**Failed:** {data['summary']['failed']}")
+          print(f"**Duration:** {data['duration']:.2f} seconds")
+          EOF
+          fi >> test-reports/test-summary.md
+      
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: test-reports/
+          retention-days: 30
+
+  # Job 3: Code quality artifacts
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Install code quality tools
+        run: |
+          pip install flake8 bandit safety mypy pylint
+      
+      - name: Create quality reports directory
+        run: mkdir -p quality-reports
+      
+      - name: Run flake8 analysis
+        continue-on-error: true
+        run: |
+          cd src
+          flake8 . --format=json --output-file=../quality-reports/flake8-report.json
+          flake8 . --format=html --htmldir=../quality-reports/flake8-html
+          flake8 . > ../quality-reports/flake8-report.txt || true
+      
+      - name: Run bandit security analysis
+        continue-on-error: true
+        run: |
+          cd src
+          bandit -r . -f json -o ../quality-reports/bandit-report.json
+          bandit -r . -f html -o ../quality-reports/bandit-report.html
+          bandit -r . > ../quality-reports/bandit-report.txt || true
+      
+      - name: Run safety check
+        continue-on-error: true
+        run: |
+          cd src
+          safety check --json --output ../quality-reports/safety-report.json
+          safety check > ../quality-reports/safety-report.txt || true
+      
+      - name: Run pylint analysis
+        continue-on-error: true
+        run: |
+          cd src
+          pylint *.py --output-format=json > ../quality-reports/pylint-report.json || true
+          pylint *.py > ../quality-reports/pylint-report.txt || true
+      
+      - name: Create quality summary
+        run: |
+          echo "# Code Quality Summary" > quality-reports/quality-summary.md
+          echo "" >> quality-reports/quality-summary.md
+          echo "**Analysis Date:** $(date)" >> quality-reports/quality-summary.md
+          echo "**Git Commit:** ${{ github.sha }}" >> quality-reports/quality-summary.md
+          echo "" >> quality-reports/quality-summary.md
+          echo "## Tools Used" >> quality-reports/quality-summary.md
+          echo "- **Flake8:** Style and error checking" >> quality-reports/quality-summary.md
+          echo "- **Bandit:** Security vulnerability scanning" >> quality-reports/quality-summary.md
+          echo "- **Safety:** Dependency vulnerability checking" >> quality-reports/quality-summary.md
+          echo "- **Pylint:** Comprehensive code analysis" >> quality-reports/quality-summary.md
+          echo "" >> quality-reports/quality-summary.md
+          echo "## Report Files" >> quality-reports/quality-summary.md
+          echo "- flake8-report.json/txt/html" >> quality-reports/quality-summary.md
+          echo "- bandit-report.json/txt/html" >> quality-reports/quality-summary.md
+          echo "- safety-report.json/txt" >> quality-reports/quality-summary.md
+          echo "- pylint-report.json/txt" >> quality-reports/quality-summary.md
+      
+      - name: Upload code quality artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-quality-reports
+          path: quality-reports/
+          retention-days: 30
+
+  # Job 4: Documentation artifacts
+  documentation:
+    name: Generate Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Install documentation tools
+        run: |
+          pip install sphinx sphinx-rtd-theme pydoc-markdown
+      
+      - name: Create documentation directory
+        run: mkdir -p documentation
+      
+      - name: Generate API documentation
+        run: |
+          cd src
+          # Generate API documentation
+          python -m pydoc -w app
+          mv *.html ../documentation/
+      
+      - name: Create user manual
+        run: |
+          cat > documentation/USER_MANUAL.md << 'EOF'
+          # GitHub Actions Demo Application - User Manual
+          
+          ## Overview
+          This is a simple Flask web application created for demonstrating GitHub Actions workflows.
+          
+          ## API Endpoints
+          
+          ### GET /
+          Returns a welcome message with application status.
+          
+          ### GET /health
+          Health check endpoint that returns application status.
+          
+          ### POST /api/calculate
+          Performs mathematical calculations on an array of numbers.
+          
+          **Request Body:**
+          ```json
+          {
+            "numbers": [1, 2, 3, 4, 5],
+            "operation": "sum"
+          }
+          ```
+          
+          **Supported Operations:**
+          - sum: Addition of all numbers
+          - product: Multiplication of all numbers
+          - average: Average of all numbers
+          
+          ### GET /api/info
+          Returns information about the application and available endpoints.
+          
+          ## Running the Application
+          
+          1. Install dependencies:
+             ```bash
+             pip install -r requirements.txt
+             ```
+          
+          2. Run the application:
+             ```bash
+             python app.py
+             ```
+          
+          3. Access the application at http://localhost:5000
+          
+          ## Environment Variables
+          
+          - `PORT`: Port number (default: 5000)
+          - `ENVIRONMENT`: Environment name (default: development)
+          - `DEBUG`: Enable debug mode (default: False)
+          EOF
+      
+      - name: Create deployment guide
+        run: |
+          cat > documentation/DEPLOYMENT_GUIDE.md << 'EOF'
+          # Deployment Guide
+          
+          ## Manual Deployment
+          
+          This repository includes a manual deployment workflow that can be triggered from the GitHub Actions tab.
+          
+          ### Deployment Parameters
+          
+          1. **Environment**: Choose target environment (development, staging, production)
+          2. **Version**: Specify application version to deploy
+          3. **Run Tests**: Whether to run tests before deployment
+          4. **Deployment Strategy**: Choose deployment strategy (blue-green, rolling, recreate)
+          5. **Notify Teams**: Send notifications after deployment
+          6. **Custom Message**: Custom deployment message
+          
+          ### Deployment Process
+          
+          1. Go to GitHub Actions tab
+          2. Select "Manual Trigger Workflow"
+          3. Click "Run workflow"
+          4. Fill in the required parameters
+          5. Click "Run workflow" to start deployment
+          
+          ### Monitoring
+          
+          Monitor the deployment progress in the Actions tab. Each step will show detailed logs and progress.
+          EOF
+      
+      - name: Upload documentation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: documentation/
+          retention-days: 60
+
+  # Job 5: Combine and process all artifacts
+  combine-artifacts:
+    name: Combine All Artifacts
+    runs-on: ubuntu-latest
+    needs: [build-artifacts, test-artifacts, code-quality, documentation]
+    
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: application-build
+          path: combined/build/
+      
+      - name: Download test reports
+        uses: actions/download-artifact@v4
+        with:
+          name: test-reports
+          path: combined/tests/
+      
+      - name: Download quality reports
+        uses: actions/download-artifact@v4
+        with:
+          name: code-quality-reports
+          path: combined/quality/
+      
+      - name: Download documentation
+        uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: combined/docs/
+      
+      - name: Create release package
+        run: |
+          # Create a comprehensive release package
+          cat > combined/README.md << 'EOF'
+          # GitHub Actions Demo - Release Package
+          
+          This package contains all build artifacts, test reports, and documentation for the GitHub Actions Demo application.
+          
+          ## Contents
+          
+          - **build/**: Application binaries and build information
+          - **tests/**: Test reports and coverage information
+          - **quality/**: Code quality analysis reports
+          - **docs/**: Documentation and user manuals
+          
+          ## Quick Start
+          
+          1. Extract this package
+          2. Read the user manual in `docs/USER_MANUAL.md`
+          3. Run the application from the `build/` directory
+          4. View test results in `tests/pytest-report.html`
+          5. Review code quality in `quality/` directory
+          
+          EOF
+          
+          # Create a manifest
+          echo "# Release Package Manifest" > combined/MANIFEST.md
+          echo "" >> combined/MANIFEST.md
+          echo "**Generated:** $(date)" >> combined/MANIFEST.md
+          echo "**Git Commit:** ${{ github.sha }}" >> combined/MANIFEST.md
+          echo "**Branch:** ${{ github.ref_name }}" >> combined/MANIFEST.md
+          echo "**Workflow:** ${{ github.workflow }}" >> combined/MANIFEST.md
+          echo "**Run ID:** ${{ github.run_id }}" >> combined/MANIFEST.md
+          echo "" >> combined/MANIFEST.md
+          echo "## File Structure" >> combined/MANIFEST.md
+          find combined -type f | sort >> combined/MANIFEST.md
+      
+      - name: Upload combined release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-package-${{ github.run_number }}
+          path: combined/
+          retention-days: 90
+
+  # Job 6: Artifact cleanup and summary
+  artifact-summary:
+    name: Artifact Summary
+    runs-on: ubuntu-latest
+    needs: [combine-artifacts]
+    if: always()
+    
+    steps:
+      - name: Generate artifact summary
+        run: |
+          echo "## 📦 Artifacts Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This workflow generated the following artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact Name | Description | Retention |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------------|-------------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| application-build | Application binaries and build info | 30 days |" >> $GITHUB_STEP_SUMMARY
+          echo "| test-reports | Test results and coverage reports | 30 days |" >> $GITHUB_STEP_SUMMARY
+          echo "| code-quality-reports | Code quality analysis | 30 days |" >> $GITHUB_STEP_SUMMARY
+          echo "| documentation | User manuals and API docs | 60 days |" >> $GITHUB_STEP_SUMMARY
+          echo "| release-package-${{ github.run_number }} | Combined release package | 90 days |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Artifacts | ${{ needs.build-artifacts.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Artifacts | ${{ needs.test-artifacts.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Code Quality | ${{ needs.code-quality.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Documentation | ${{ needs.documentation.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Combine Artifacts | ${{ needs.combine-artifacts.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Generated at:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**Git Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Artifact usage examples
+        run: |
+          echo "📥 Artifact Usage Examples"
+          echo ""
+          echo "To download artifacts using GitHub CLI:"
+          echo "gh run download ${{ github.run_id }} -n application-build"
+          echo ""
+          echo "To download via API:"
+          echo "curl -L -H 'Authorization: token TOKEN' https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
+          echo ""
+          echo "To view artifacts in browser:"
+          echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

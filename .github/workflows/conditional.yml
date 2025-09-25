@@ -1,0 +1,278 @@
+name: Conditional Workflows
+
+# This workflow demonstrates various conditional execution patterns
+# Shows how to run jobs/steps based on different conditions
+
+on:
+  push:
+    branches: [ main, master, develop, feature/**, "copilot/**" ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  # Job 1: Branch-based conditions
+  branch-conditions:
+    name: Branch-based Execution
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Main branch only
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          echo "🎯 This runs only on main/master branch"
+          echo "Current branch: ${{ github.ref }}"
+      
+      - name: Development branch only
+        if: github.ref == 'refs/heads/develop'
+        run: |
+          echo "🚧 This runs only on develop branch"
+          echo "Development-specific tasks here"
+      
+      - name: Feature branch only
+        if: startsWith(github.ref, 'refs/heads/feature/')
+        run: |
+          echo "🌟 This runs only on feature branches"
+          echo "Feature branch: ${{ github.ref }}"
+      
+      - name: Not on main branch
+        if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master'
+        run: |
+          echo "🔧 This runs on all branches except main/master"
+          echo "Current branch: ${{ github.ref }}"
+
+  # Job 2: Event-based conditions
+  event-conditions:
+    name: Event-based Execution
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: On push only
+        if: github.event_name == 'push'
+        run: |
+          echo "📤 This runs only on push events"
+          echo "Pushed by: ${{ github.actor }}"
+          echo "Commit SHA: ${{ github.sha }}"
+      
+      - name: On pull request only
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "🔀 This runs only on pull request events"
+          echo "PR number: ${{ github.event.pull_request.number }}"
+          echo "PR title: ${{ github.event.pull_request.title }}"
+      
+      - name: On manual trigger only
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "👆 This runs only when manually triggered"
+          echo "Triggered by: ${{ github.actor }}"
+
+  # Job 3: Path-based conditions
+  path-conditions:
+    name: Path-based Execution
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v41
+        with:
+          files_yaml: |
+            python:
+              - 'src/**/*.py'
+            workflows:
+              - '.github/workflows/**'
+            docs:
+              - 'docs/**'
+              - '*.md'
+      
+      - name: Python files changed
+        if: steps.changed-files.outputs.python_any_changed == 'true'
+        run: |
+          echo "🐍 Python files were changed"
+          echo "Changed Python files:"
+          echo "${{ steps.changed-files.outputs.python_all_changed_files }}"
+      
+      - name: Workflow files changed
+        if: steps.changed-files.outputs.workflows_any_changed == 'true'
+        run: |
+          echo "⚙️ Workflow files were changed"
+          echo "Changed workflow files:"
+          echo "${{ steps.changed-files.outputs.workflows_all_changed_files }}"
+      
+      - name: Documentation changed
+        if: steps.changed-files.outputs.docs_any_changed == 'true'
+        run: |
+          echo "📝 Documentation files were changed"
+          echo "Changed documentation files:"
+          echo "${{ steps.changed-files.outputs.docs_all_changed_files }}"
+
+  # Job 4: Failure conditions and error handling
+  failure-handling:
+    name: Failure Handling
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Step that might fail
+        id: risky-step
+        continue-on-error: true
+        run: |
+          # Simulate a step that might fail
+          if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "✅ Success on main branch"
+            exit 0
+          else
+            echo "❌ Simulated failure on other branches"
+            exit 1
+          fi
+      
+      - name: Run if previous step succeeded
+        if: steps.risky-step.outcome == 'success'
+        run: |
+          echo "🎉 Previous step succeeded, continuing with success path"
+      
+      - name: Run if previous step failed
+        if: steps.risky-step.outcome == 'failure'
+        run: |
+          echo "🔥 Previous step failed, running recovery actions"
+          echo "This could be cleanup, notifications, etc."
+      
+      - name: Always run (regardless of previous steps)
+        if: always()
+        run: |
+          echo "🔄 This step always runs"
+          echo "Previous step outcome: ${{ steps.risky-step.outcome }}"
+
+  # Job 5: Complex conditions with multiple criteria
+  complex-conditions:
+    name: Complex Conditional Logic
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Complex condition example 1
+        if: |
+          (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+          (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'urgent'))
+        run: |
+          echo "🚨 High priority execution"
+          echo "This runs on main branch pushes OR urgent PRs"
+      
+      - name: Complex condition example 2
+        if: |
+          github.actor != 'dependabot[bot]' && 
+          !contains(github.event.head_commit.message, '[skip ci]') &&
+          !startsWith(github.ref, 'refs/heads/renovate/')
+        run: |
+          echo "🤖 Human-initiated changes"
+          echo "This skips bot commits and [skip ci] commits"
+      
+      - name: Environment-based condition
+        if: |
+          (github.ref == 'refs/heads/main' && github.repository == 'navaneethreddydevops/github-actions-end-to-end') ||
+          (github.event_name == 'workflow_dispatch') ||
+          (startsWith(github.ref, 'refs/heads/copilot/'))
+        run: |
+          echo "🏭 Production environment actions"
+          echo "This runs in production repo on main branch, manual trigger, or copilot branch"
+
+  # Job 6: Job-level conditions
+  production-only:
+    name: Production Only Job
+    runs-on: ubuntu-latest
+    # This entire job only runs on main branch pushes or copilot branches for testing
+    if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/copilot/')) && github.event_name == 'push'
+    
+    steps:
+      - name: Production deployment
+        run: |
+          echo "🚀 This job only runs for production deployments"
+          echo "Branch: ${{ github.ref }}"
+          echo "Event: ${{ github.event_name }}"
+
+  staging-only:
+    name: Staging Only Job
+    runs-on: ubuntu-latest
+    # This job only runs on develop branch
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    
+    steps:
+      - name: Staging deployment
+        run: |
+          echo "🧪 This job only runs for staging deployments"
+          echo "Branch: ${{ github.ref }}"
+
+  feature-testing:
+    name: Feature Testing Job
+    runs-on: ubuntu-latest
+    # This job runs on feature branches, pull requests, and copilot branches
+    if: startsWith(github.ref, 'refs/heads/feature/') || startsWith(github.ref, 'refs/heads/copilot/') || github.event_name == 'pull_request'
+    
+    steps:
+      - name: Feature testing
+        run: |
+          echo "🔬 This job runs for feature development"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "Testing PR: ${{ github.event.pull_request.number }}"
+          else
+            echo "Testing feature branch: ${{ github.ref }}"
+          fi
+
+  # Job 7: Summary with conditional results
+  conditional-summary:
+    name: Conditional Summary
+    runs-on: ubuntu-latest
+    needs: [branch-conditions, event-conditions, path-conditions, failure-handling, complex-conditions]
+    if: always()
+    
+    steps:
+      - name: Generate conditional summary
+        run: |
+          echo "## Conditional Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Execution Context" >> $GITHUB_STEP_SUMMARY
+          echo "- **Event:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch/Ref:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Actor:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch Conditions | ${{ needs.branch-conditions.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Event Conditions | ${{ needs.event-conditions.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Path Conditions | ${{ needs.path-conditions.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failure Handling | ${{ needs.failure-handling.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Complex Conditions | ${{ needs.complex-conditions.result }} |" >> $GITHUB_STEP_SUMMARY
+          
+          # Check if production or staging jobs ran
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Environment-Specific Jobs" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "- ✅ Production job should have run" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⏭️ Production job skipped (not on main)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            echo "- ✅ Staging job should have run" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⏭️ Staging job skipped (not on develop)" >> $GITHUB_STEP_SUMMARY
+          fi

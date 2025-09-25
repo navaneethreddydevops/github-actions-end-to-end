@@ -1,0 +1,261 @@
+name: Matrix Build Workflow
+
+# This workflow demonstrates matrix builds - running the same job
+# across multiple versions, operating systems, or configurations
+
+on:
+  push:
+    branches: [ main, master ]
+    paths: 
+      - 'src/**'
+      - '.github/workflows/ci-matrix.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'src/**'
+
+jobs:
+  # Matrix build across Python versions
+  test-python-versions:
+    name: Test Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    
+    strategy:
+      # Don't cancel all jobs if one fails
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Display Python version
+        run: python -c "import sys; print(sys.version)"
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('src/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run tests
+        run: |
+          cd src
+          pytest tests/ -v --tb=short
+
+  # Matrix build across operating systems
+  test-os-matrix:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.9']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run tests
+        run: |
+          cd src
+          pytest tests/ -v
+
+  # Complex matrix with inclusions and exclusions
+  test-complex-matrix:
+    name: Complex Matrix (${{ matrix.python-version }}, ${{ matrix.os }}, ${{ matrix.experimental && 'experimental' || 'stable' }})
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.9', '3.10']
+        os: [ubuntu-latest, windows-latest]
+        experimental: [false]
+        
+        # Include additional configurations
+        include:
+          # Add experimental Python 3.11 on Ubuntu only
+          - python-version: '3.11'
+            os: ubuntu-latest
+            experimental: true
+          
+          # Add a special configuration with extra packages
+          - python-version: '3.9'
+            os: ubuntu-latest
+            experimental: false
+            extra-packages: 'requests-mock pytest-benchmark'
+        
+        # Exclude problematic combinations
+        exclude:
+          # Exclude Python 3.8 on Windows (example exclusion)
+          - python-version: '3.8'
+            os: windows-latest
+    
+    continue-on-error: ${{ matrix.experimental }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Install extra packages
+        if: matrix.extra-packages
+        run: |
+          pip install ${{ matrix.extra-packages }}
+      
+      - name: Show experimental status
+        if: matrix.experimental
+        run: |
+          echo "⚠️  This is an experimental configuration"
+          echo "Python version: ${{ matrix.python-version }}"
+          echo "OS: ${{ matrix.os }}"
+      
+      - name: Run tests
+        run: |
+          cd src
+          pytest tests/ -v
+      
+      - name: Run performance benchmarks
+        if: matrix.extra-packages
+        run: |
+          cd src
+          # Example: run benchmarks if pytest-benchmark is installed
+          python -c "
+          import time
+          import requests
+          
+          # Simple benchmark
+          start = time.time()
+          # Simulate some work
+          for i in range(100):
+              result = sum(range(i))
+          end = time.time()
+          print(f'Benchmark completed in {end - start:.4f} seconds')
+          "
+
+  # Matrix for different dependency versions
+  test-dependency-versions:
+    name: Flask ${{ matrix.flask-version }}
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        flask-version: ['2.3.0', '3.0.0']
+        python-version: ['3.9']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install base dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest pytest-cov flake8 black requests
+      
+      - name: Install Flask ${{ matrix.flask-version }}
+        run: |
+          pip install flask==${{ matrix.flask-version }}
+      
+      - name: Show versions
+        run: |
+          pip freeze | grep -i flask
+          python -c "import flask; print(f'Flask version: {flask.__version__}')"
+      
+      - name: Run tests
+        run: |
+          cd src
+          pytest tests/ -v
+
+  # Job to collect matrix results
+  matrix-results:
+    name: Matrix Results Summary
+    runs-on: ubuntu-latest
+    needs: [test-python-versions, test-os-matrix, test-complex-matrix, test-dependency-versions]
+    if: always()
+    
+    steps:
+      - name: Generate Matrix Summary
+        run: |
+          echo "## Matrix Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Python Versions Test" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ needs.test-python-versions.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Operating Systems Test" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ needs.test-os-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Complex Matrix Test" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ needs.test-complex-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Dependency Versions Test" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ needs.test-dependency-versions.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "**Matrix build completed at:** $(date)" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Check overall status
+        run: |
+          if [[ "${{ needs.test-python-versions.result }}" == "success" && 
+                "${{ needs.test-os-matrix.result }}" == "success" && 
+                "${{ needs.test-dependency-versions.result }}" == "success" ]]; then
+            echo "✅ All core matrix builds passed!"
+          else
+            echo "❌ Some matrix builds failed"
+            exit 1
+          fi

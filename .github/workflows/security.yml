@@ -1,0 +1,527 @@
+name: Security Scanning Workflow
+
+# This workflow demonstrates comprehensive security scanning practices
+# including code analysis, dependency scanning, and vulnerability management
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    # Run security scans daily at 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Type of security scan to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'code-analysis'
+          - 'dependencies'
+          - 'secrets'
+          - 'container'
+
+# Security scanning permissions
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  # Job 1: Code security analysis
+  code-security-analysis:
+    name: Code Security Analysis
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.scan_type == 'all' || 
+      github.event.inputs.scan_type == 'code-analysis' ||
+      github.event_name != 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install security scanning tools
+        run: |
+          pip install bandit[toml] semgrep safety
+      
+      - name: Run Bandit security linter
+        run: |
+          echo "🛡️ Running Bandit security analysis"
+          
+          # Create bandit configuration
+          cat > .bandit << EOF
+          [bandit]
+          exclude = /tests/
+          skips = B101,B601
+          EOF
+          
+          # Run bandit with different output formats
+          bandit -r src/ -f json -o bandit-results.json || true
+          bandit -r src/ -f txt -o bandit-results.txt || true
+          bandit -r src/ -f html -o bandit-results.html || true
+          
+          echo "Bandit scan completed"
+      
+      - name: Run Semgrep static analysis
+        run: |
+          echo "🔍 Running Semgrep static analysis"
+          
+          # Install and run semgrep with Python security rules
+          python -m pip install semgrep
+          semgrep --config=p/python --json --output=semgrep-results.json src/ || true
+          semgrep --config=p/python --text --output=semgrep-results.txt src/ || true
+          
+          echo "Semgrep scan completed"
+      
+      - name: Custom security checks
+        run: |
+          echo "🔒 Running custom security checks"
+          
+          # Check for hardcoded secrets patterns
+          echo "Checking for potential secrets..."
+          grep -r -i "password\|secret\|key\|token" src/ --exclude-dir=tests || echo "No obvious secrets found"
+          
+          # Check for dangerous function usage
+          echo "Checking for dangerous functions..."
+          grep -r "eval\|exec\|subprocess.call" src/ || echo "No dangerous functions found"
+          
+          # Check imports for potentially unsafe libraries
+          echo "Checking imports..."
+          python3 << EOF
+          import ast
+          import os
+          
+          dangerous_imports = ['pickle', 'marshal', 'shelve', 'subprocess']
+          
+          for root, dirs, files in os.walk('src'):
+              for file in files:
+                  if file.endswith('.py'):
+                      filepath = os.path.join(root, file)
+                      try:
+                          with open(filepath, 'r') as f:
+                              tree = ast.parse(f.read())
+                          
+                          for node in ast.walk(tree):
+                              if isinstance(node, ast.Import):
+                                  for alias in node.names:
+                                      if alias.name in dangerous_imports:
+                                          print(f"⚠️ Potentially dangerous import in {filepath}: {alias.name}")
+                              elif isinstance(node, ast.ImportFrom):
+                                  if node.module in dangerous_imports:
+                                      print(f"⚠️ Potentially dangerous import in {filepath}: {node.module}")
+                      except Exception as e:
+                          print(f"Error parsing {filepath}: {e}")
+          EOF
+      
+      - name: Upload security analysis results
+        uses: actions/upload-artifact@v3
+        with:
+          name: code-security-analysis
+          path: |
+            bandit-results.*
+            semgrep-results.*
+          retention-days: 30
+
+  # Job 2: Dependency vulnerability scanning
+  dependency-security:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.scan_type == 'all' || 
+      github.event.inputs.scan_type == 'dependencies' ||
+      github.event_name != 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run Safety check
+        run: |
+          echo "🛡️ Running Safety dependency check"
+          
+          pip install safety
+          
+          # Run safety check with different outputs
+          cd src
+          safety check --json --output ../safety-results.json || true
+          safety check --short-report --output ../safety-results.txt || true
+          safety check || echo "Safety check completed with issues"
+      
+      - name: Run pip-audit
+        run: |
+          echo "🔍 Running pip-audit"
+          
+          pip install pip-audit
+          
+          cd src
+          pip-audit --format=json --output=../pip-audit-results.json || true
+          pip-audit --format=cyclonedx --output=../pip-audit-sbom.json || true
+          pip-audit || echo "pip-audit completed with findings"
+      
+      - name: Check for known CVEs
+        run: |
+          echo "🚨 Checking for known CVEs in dependencies"
+          
+          # Create a simple CVE check
+          python3 << EOF
+          import json
+          import pkg_resources
+          
+          print("Installed packages:")
+          for dist in pkg_resources.working_set:
+              print(f"- {dist.project_name}: {dist.version}")
+          
+          # Check for packages with known recent vulnerabilities
+          high_risk_packages = [
+              'requests', 'urllib3', 'pillow', 'jinja2', 'pyyaml'
+          ]
+          
+          print("\nHigh-risk packages to monitor:")
+          for pkg in high_risk_packages:
+              try:
+                  version = pkg_resources.get_distribution(pkg).version
+                  print(f"⚠️ {pkg}: {version} (monitor for updates)")
+              except pkg_resources.DistributionNotFound:
+                  pass
+          EOF
+      
+      - name: Generate dependency tree
+        run: |
+          echo "📊 Generating dependency tree"
+          
+          pip install pipdeptree
+          cd src
+          pipdeptree --json > ../dependency-tree.json
+          pipdeptree > ../dependency-tree.txt
+      
+      - name: Upload dependency scan results
+        uses: actions/upload-artifact@v3
+        with:
+          name: dependency-security-scan
+          path: |
+            safety-results.*
+            pip-audit-results.*
+            pip-audit-sbom.json
+            dependency-tree.*
+          retention-days: 30
+
+  # Job 3: Secret scanning
+  secret-scanning:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.scan_type == 'all' || 
+      github.event.inputs.scan_type == 'secrets' ||
+      github.event_name != 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for secret scanning
+      
+      - name: Install secret scanning tools
+        run: |
+          # Install truffleHog for secret detection
+          pip install truffleHog
+          
+          # Install detect-secrets
+          pip install detect-secrets
+      
+      - name: Run TruffleHog secret scan
+        run: |
+          echo "🔍 Running TruffleHog secret scan"
+          
+          # Scan repository history for secrets
+          trufflehog --json filesystem . > trufflehog-results.json || true
+          trufflehog filesystem . > trufflehog-results.txt || true
+          
+          echo "TruffleHog scan completed"
+      
+      - name: Run detect-secrets
+        run: |
+          echo "🕵️ Running detect-secrets baseline scan"
+          
+          # Create baseline
+          detect-secrets scan --all-files --disable-plugin AbsolutePathDetector > .secrets.baseline
+          
+          # Audit the baseline
+          detect-secrets audit .secrets.baseline --report --output detect-secrets-report.json || true
+          
+          echo "detect-secrets scan completed"
+      
+      - name: Custom secret patterns check
+        run: |
+          echo "🔐 Checking for custom secret patterns"
+          
+          # Define patterns to look for
+          patterns=(
+            "api[_-]?key"
+            "secret[_-]?key" 
+            "private[_-]?key"
+            "access[_-]?token"
+            "auth[_-]?token"
+            "password"
+            "passwd"
+            "pwd"
+            "credential"
+            "secret"
+          )
+          
+          echo "Scanning for secret patterns..."
+          for pattern in "${patterns[@]}"; do
+            echo "Checking pattern: $pattern"
+            grep -ri "$pattern" . --exclude-dir=.git --exclude="*.json" --exclude-dir=.secrets.baseline || true
+          done > custom-secret-scan.txt
+          
+          echo "Custom secret scanning completed"
+      
+      - name: Upload secret scan results
+        uses: actions/upload-artifact@v3
+        with:
+          name: secret-scanning-results
+          path: |
+            trufflehog-results.*
+            .secrets.baseline
+            detect-secrets-report.json
+            custom-secret-scan.txt
+          retention-days: 30
+
+  # Job 4: Container security scanning (simulated)
+  container-security:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.scan_type == 'all' || 
+      github.event.inputs.scan_type == 'container' ||
+      github.event_name != 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Create Dockerfile for scanning
+        run: |
+          cat > Dockerfile << 'EOF'
+          FROM python:3.9-slim
+          
+          # Create app directory
+          WORKDIR /app
+          
+          # Copy requirements first for better caching
+          COPY src/requirements.txt .
+          
+          # Install dependencies
+          RUN pip install --no-cache-dir -r requirements.txt
+          
+          # Copy application code
+          COPY src/ .
+          
+          # Create non-root user
+          RUN adduser --disabled-password --gecos '' appuser
+          RUN chown -R appuser:appuser /app
+          USER appuser
+          
+          # Expose port
+          EXPOSE 5000
+          
+          # Health check
+          HEALTHCHECK CMD curl --fail http://localhost:5000/health || exit 1
+          
+          # Start application
+          CMD ["python", "app.py"]
+          EOF
+      
+      - name: Build Docker image
+        run: |
+          echo "🐳 Building Docker image for security scanning"
+          docker build -t github-actions-demo:latest .
+      
+      - name: Run Docker security scan (simulated)
+        run: |
+          echo "🔍 Running container security analysis"
+          
+          # Simulate container scanning (in real scenario, use tools like Trivy, Snyk, etc.)
+          echo "Analyzing Docker image..."
+          
+          # Check Dockerfile best practices
+          echo "Dockerfile security analysis:" > container-security-report.txt
+          
+          if grep -q "USER " Dockerfile; then
+            echo "✅ Non-root user configured" >> container-security-report.txt
+          else
+            echo "⚠️ Running as root user" >> container-security-report.txt
+          fi
+          
+          if grep -q "HEALTHCHECK" Dockerfile; then
+            echo "✅ Health check configured" >> container-security-report.txt
+          else
+            echo "⚠️ No health check configured" >> container-security-report.txt
+          fi
+          
+          if grep -q "\-\-no\-cache\-dir" Dockerfile; then
+            echo "✅ Pip cache disabled for smaller image" >> container-security-report.txt
+          else
+            echo "⚠️ Consider disabling pip cache" >> container-security-report.txt
+          fi
+          
+          # Simulate vulnerability scanning
+          echo "Base image vulnerabilities: 0 critical, 2 high, 5 medium, 12 low" >> container-security-report.txt
+          
+          cat container-security-report.txt
+      
+      - name: Upload container scan results
+        uses: actions/upload-artifact@v3
+        with:
+          name: container-security-scan
+          path: |
+            Dockerfile
+            container-security-report.txt
+          retention-days: 30
+
+  # Job 5: Security compliance check
+  compliance-check:
+    name: Security Compliance Check
+    runs-on: ubuntu-latest
+    needs: [code-security-analysis, dependency-security, secret-scanning, container-security]
+    if: always()
+    
+    steps:
+      - name: Download all security scan results
+        uses: actions/download-artifact@v3
+        with:
+          path: security-results/
+      
+      - name: Generate compliance report
+        run: |
+          echo "📋 Generating security compliance report"
+          
+          cat > security-compliance-report.md << EOF
+          # Security Compliance Report
+          
+          **Generated:** $(date)
+          **Repository:** ${{ github.repository }}
+          **Commit:** ${{ github.sha }}
+          **Branch:** ${{ github.ref_name }}
+          
+          ## Scan Summary
+          
+          | Scan Type | Status |
+          |-----------|--------|
+          | Code Analysis | ${{ needs.code-security-analysis.result }} |
+          | Dependencies | ${{ needs.dependency-security.result }} |
+          | Secrets | ${{ needs.secret-scanning.result }} |
+          | Container | ${{ needs.container-security.result }} |
+          
+          ## Compliance Checklist
+          
+          - [x] Static code analysis performed
+          - [x] Dependency vulnerability scanning completed
+          - [x] Secret detection executed
+          - [x] Container security analysis done
+          - [ ] Manual security review (pending)
+          - [ ] Penetration testing (scheduled)
+          
+          ## Recommendations
+          
+          1. Review all security scan results
+          2. Address any critical or high-severity findings
+          3. Update dependencies with known vulnerabilities
+          4. Ensure no secrets are committed to repository
+          5. Follow container security best practices
+          
+          ## Next Actions
+          
+          - Monitor security advisories for dependencies
+          - Schedule regular security reviews
+          - Update security scanning tools regularly
+          - Train team on secure coding practices
+          
+          EOF
+          
+          cat security-compliance-report.md
+      
+      - name: Check for critical findings
+        run: |
+          echo "🚨 Checking for critical security findings"
+          
+          critical_found=false
+          
+          # Check Bandit results for high severity issues
+          if [[ -f "security-results/code-security-analysis/bandit-results.json" ]]; then
+            high_issues=$(jq '.results[] | select(.issue_severity == "HIGH" or .issue_severity == "MEDIUM")' security-results/code-security-analysis/bandit-results.json 2>/dev/null | wc -l)
+            if [[ $high_issues -gt 0 ]]; then
+              echo "⚠️ Found $high_issues high/medium severity code issues"
+              critical_found=true
+            fi
+          fi
+          
+          # Check Safety results
+          if [[ -f "security-results/dependency-security-scan/safety-results.json" ]]; then
+            vulns=$(jq '.vulnerabilities | length' security-results/dependency-security-scan/safety-results.json 2>/dev/null || echo "0")
+            if [[ $vulns -gt 0 ]]; then
+              echo "⚠️ Found $vulns dependency vulnerabilities"
+              critical_found=true
+            fi
+          fi
+          
+          if [[ "$critical_found" == "true" ]]; then
+            echo "❌ Critical security findings detected - review required"
+            echo "critical-findings=true" >> $GITHUB_ENV
+          else
+            echo "✅ No critical security findings detected"
+            echo "critical-findings=false" >> $GITHUB_ENV
+          fi
+      
+      - name: Upload compliance report
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-compliance-report
+          path: security-compliance-report.md
+          retention-days: 90
+      
+      - name: Generate security summary
+        run: |
+          echo "## 🛡️ Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Code Analysis | ${{ needs.code-security-analysis.result }} | Bandit, Semgrep static analysis |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dependencies | ${{ needs.dependency-security.result }} | Safety, pip-audit vulnerability scan |" >> $GITHUB_STEP_SUMMARY
+          echo "| Secret Scanning | ${{ needs.secret-scanning.result }} | TruffleHog, detect-secrets |" >> $GITHUB_STEP_SUMMARY
+          echo "| Container Security | ${{ needs.container-security.result }} | Docker image security analysis |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ env.critical-findings }}" == "true" ]]; then
+            echo "### ⚠️ Action Required" >> $GITHUB_STEP_SUMMARY
+            echo "Critical security findings detected. Please review the security reports." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ✅ Security Status" >> $GITHUB_STEP_SUMMARY
+            echo "No critical security findings detected." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Report generated at:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**Next scan:** Scheduled daily at 3:00 AM UTC" >> $GITHUB_STEP_SUMMARY

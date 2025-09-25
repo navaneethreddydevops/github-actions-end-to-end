@@ -1,0 +1,411 @@
+name: Deployment Workflow
+
+# This workflow demonstrates deployment patterns including:
+# - Environment-specific deployments
+# - Approval workflows
+# - Rollback strategies
+# - Blue-green deployments
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: environment
+      version:
+        description: 'Version to deploy (leave empty for latest)'
+        required: false
+        type: string
+
+# Ensure only one deployment runs at a time per environment
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'auto' }}
+  cancel-in-progress: false
+
+jobs:
+  # Job 1: Determine deployment strategy
+  determine-deployment:
+    name: Determine Deployment Strategy
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+      target-env: ${{ steps.check.outputs.target-env }}
+      version: ${{ steps.check.outputs.version }}
+      is-production: ${{ steps.check.outputs.is-production }}
+    
+    steps:
+      - name: Check deployment conditions
+        id: check
+        run: |
+          # Determine if we should deploy
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "target-env=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "version=${{ github.event.inputs.version || 'latest' }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/master" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "target-env=production" >> $GITHUB_OUTPUT
+            echo "version=latest" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "target-env=staging" >> $GITHUB_OUTPUT
+            echo "version=latest" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.pull_request.merged }}" == "true" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "target-env=staging" >> $GITHUB_OUTPUT
+            echo "version=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check if production deployment
+          if [[ "${{ github.event.inputs.environment }}" == "production" ]] || [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "is-production=true" >> $GITHUB_OUTPUT
+          else
+            echo "is-production=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Display deployment plan
+        run: |
+          echo "## 🚀 Deployment Plan" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Should Deploy | ${{ steps.check.outputs.should-deploy }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Target Environment | ${{ steps.check.outputs.target-env }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ steps.check.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Is Production | ${{ steps.check.outputs.is-production }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trigger | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+
+  # Job 2: Build for deployment
+  build-for-deployment:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: determine-deployment
+    if: needs.determine-deployment.outputs.should-deploy == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          cd src
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run tests before deployment
+        run: |
+          cd src
+          pytest tests/ -v
+      
+      - name: Build application package
+        run: |
+          mkdir -p deployment-package
+          
+          # Copy application files
+          cp -r src/* deployment-package/
+          
+          # Create deployment manifest
+          cat > deployment-package/deployment-manifest.json << EOF
+          {
+            "version": "${{ needs.determine-deployment.outputs.version }}",
+            "build_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "git_commit": "${{ github.sha }}",
+            "git_branch": "${{ github.ref_name }}",
+            "target_environment": "${{ needs.determine-deployment.outputs.target-env }}",
+            "build_number": "${{ github.run_number }}"
+          }
+          EOF
+          
+          # Create startup script
+          cat > deployment-package/start.sh << 'EOF'
+          #!/bin/bash
+          echo "Starting GitHub Actions Demo App"
+          echo "Environment: ${ENVIRONMENT:-development}"
+          echo "Port: ${PORT:-5000}"
+          python app.py
+          EOF
+          chmod +x deployment-package/start.sh
+      
+      - name: Upload deployment package
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-package-${{ needs.determine-deployment.outputs.version }}
+          path: deployment-package/
+          retention-days: 30
+
+  # Job 3: Deploy to staging (automatic)
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [determine-deployment, build-for-deployment]
+    if: |
+      needs.determine-deployment.outputs.should-deploy == 'true' && 
+      needs.determine-deployment.outputs.target-env == 'staging'
+    environment:
+      name: staging
+      url: https://staging.example.com
+    
+    steps:
+      - name: Download deployment package
+        uses: actions/download-artifact@v3
+        with:
+          name: deployment-package-${{ needs.determine-deployment.outputs.version }}
+          path: deployment-package/
+      
+      - name: Configure staging environment
+        run: |
+          echo "🧪 Configuring staging environment"
+          
+          # Create environment-specific configuration
+          cat > staging.env << EOF
+          ENVIRONMENT=staging
+          DEBUG=false
+          LOG_LEVEL=info
+          PORT=5000
+          DATABASE_URL=postgresql://staging-db:5432/app
+          REDIS_URL=redis://staging-redis:6379
+          EOF
+          
+          cat staging.env
+      
+      - name: Deploy to staging
+        run: |
+          echo "🚀 Deploying to staging environment"
+          echo "Version: ${{ needs.determine-deployment.outputs.version }}"
+          
+          # Simulate deployment steps
+          echo "1. Stopping old version..."
+          sleep 1
+          echo "2. Deploying new version..."
+          sleep 2
+          echo "3. Running database migrations..."
+          sleep 1
+          echo "4. Starting new version..."
+          sleep 1
+          echo "5. Running health checks..."
+          sleep 2
+          
+          echo "✅ Staging deployment completed!"
+      
+      - name: Run smoke tests
+        run: |
+          echo "🔬 Running smoke tests in staging"
+          
+          # Simulate smoke tests
+          echo "Testing health endpoint..."
+          echo "Testing main functionality..."
+          echo "Testing database connectivity..."
+          
+          echo "✅ All smoke tests passed!"
+      
+      - name: Update deployment status
+        run: |
+          echo "## 🎯 Staging Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** staging" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.determine-deployment.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://staging.example.com" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployed at:** $(date)" >> $GITHUB_STEP_SUMMARY
+
+  # Job 4: Deploy to production (requires approval)
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [determine-deployment, build-for-deployment]
+    if: |
+      needs.determine-deployment.outputs.should-deploy == 'true' && 
+      needs.determine-deployment.outputs.target-env == 'production'
+    environment:
+      name: production
+      url: https://example.com
+    
+    steps:
+      - name: Download deployment package
+        uses: actions/download-artifact@v3
+        with:
+          name: deployment-package-${{ needs.determine-deployment.outputs.version }}
+          path: deployment-package/
+      
+      - name: Pre-deployment checks
+        run: |
+          echo "🔍 Running pre-deployment checks"
+          
+          # Check deployment manifest
+          if [[ -f "deployment-package/deployment-manifest.json" ]]; then
+            echo "✅ Deployment manifest found"
+            cat deployment-package/deployment-manifest.json
+          else
+            echo "❌ Deployment manifest missing"
+            exit 1
+          fi
+          
+          # Verify version
+          if [[ "${{ needs.determine-deployment.outputs.version }}" != "latest" ]]; then
+            echo "✅ Deploying specific version: ${{ needs.determine-deployment.outputs.version }}"
+          else
+            echo "✅ Deploying latest version"
+          fi
+      
+      - name: Create production backup
+        run: |
+          echo "💾 Creating production backup"
+          echo "Backup created: backup-$(date +%Y%m%d-%H%M%S)"
+      
+      - name: Blue-Green deployment
+        run: |
+          echo "🔵🟢 Starting Blue-Green deployment"
+          
+          echo "Step 1: Deploy to green environment..."
+          sleep 3
+          
+          echo "Step 2: Running health checks on green..."
+          sleep 2
+          
+          echo "Step 3: Running integration tests on green..."
+          sleep 3
+          
+          echo "Step 4: Switching load balancer to green..."
+          sleep 2
+          
+          echo "Step 5: Monitoring green environment..."
+          sleep 2
+          
+          echo "Step 6: Decommissioning blue environment..."
+          sleep 1
+          
+          echo "✅ Blue-Green deployment completed successfully!"
+      
+      - name: Post-deployment verification
+        run: |
+          echo "✅ Running post-deployment verification"
+          
+          # Simulate verification tests
+          echo "Testing production endpoints..."
+          echo "Verifying database connections..."
+          echo "Checking external integrations..."
+          echo "Monitoring application metrics..."
+          
+          echo "✅ All verification checks passed!"
+      
+      - name: Update production status
+        run: |
+          echo "## 🏭 Production Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.determine-deployment.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Strategy:** Blue-Green" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://example.com" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployed at:** $(date)" >> $GITHUB_STEP_SUMMARY
+
+  # Job 5: Development deployment (for feature branches)
+  deploy-development:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: [determine-deployment, build-for-deployment]
+    if: |
+      needs.determine-deployment.outputs.should-deploy == 'true' && 
+      needs.determine-deployment.outputs.target-env == 'development'
+    environment:
+      name: development
+      url: https://dev.example.com
+    
+    steps:
+      - name: Download deployment package
+        uses: actions/download-artifact@v3
+        with:
+          name: deployment-package-${{ needs.determine-deployment.outputs.version }}
+          path: deployment-package/
+      
+      - name: Deploy to development
+        run: |
+          echo "🛠️ Deploying to development environment"
+          echo "Version: ${{ needs.determine-deployment.outputs.version }}"
+          
+          # Simple deployment for development
+          echo "Updating development environment..."
+          sleep 2
+          echo "✅ Development deployment completed!"
+
+  # Job 6: Rollback capability
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    if: failure() && (needs.deploy-staging.result == 'failure' || needs.deploy-production.result == 'failure')
+    needs: [determine-deployment, deploy-staging, deploy-production]
+    
+    steps:
+      - name: Execute rollback
+        run: |
+          echo "🔙 Executing automatic rollback"
+          
+          if [[ "${{ needs.deploy-production.result }}" == "failure" ]]; then
+            echo "Rolling back production deployment..."
+            echo "Switching load balancer back to blue environment..."
+            sleep 2
+            echo "✅ Production rollback completed"
+          fi
+          
+          if [[ "${{ needs.deploy-staging.result }}" == "failure" ]]; then
+            echo "Rolling back staging deployment..."
+            sleep 1
+            echo "✅ Staging rollback completed"
+          fi
+      
+      - name: Notify teams
+        run: |
+          echo "📧 Sending rollback notifications"
+          echo "Deployment rollback executed automatically"
+
+  # Job 7: Deployment summary
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [determine-deployment, build-for-deployment, deploy-staging, deploy-production, deploy-development, rollback]
+    if: always()
+    
+    steps:
+      - name: Generate deployment summary
+        run: |
+          echo "## 📊 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Environment:** ${{ needs.determine-deployment.outputs.target-env }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.determine-deployment.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Is Production:** ${{ needs.determine-deployment.outputs.is-production }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Determine Deployment | ${{ needs.determine-deployment.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build-for-deployment.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy Staging | ${{ needs.deploy-staging.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy Production | ${{ needs.deploy-production.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy Development | ${{ needs.deploy-development.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rollback | ${{ needs.rollback.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.rollback.result }}" == "success" ]]; then
+            echo "### ⚠️ Rollback Executed" >> $GITHUB_STEP_SUMMARY
+            echo "A rollback was performed due to deployment failure." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Summary completed at:** $(date)" >> $GITHUB_STEP_SUMMARY

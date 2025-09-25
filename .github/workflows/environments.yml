@@ -1,0 +1,514 @@
+name: Environment Management Workflow
+
+# This workflow demonstrates environment-specific configurations and deployments
+# Shows how to manage different environments with GitHub Environments
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Environment action to perform'
+        required: true
+        type: choice
+        options:
+          - 'deploy'
+          - 'promote'
+          - 'rollback'
+          - 'health-check'
+          - 'maintenance'
+      
+      target_environment:
+        description: 'Target environment'
+        required: true
+        type: environment
+      
+      source_environment:
+        description: 'Source environment (for promote action)'
+        required: false
+        type: choice
+        options:
+          - 'development'
+          - 'staging'
+          - 'production'
+      
+      maintenance_window:
+        description: 'Maintenance window in minutes'
+        required: false
+        default: '30'
+        type: string
+
+# Environment-specific permissions
+permissions:
+  contents: read
+  deployments: write
+  environments: write
+
+jobs:
+  # Job 1: Environment validation and setup
+  environment-validation:
+    name: Validate Environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment-config: ${{ steps.config.outputs.environment-config }}
+      deployment-strategy: ${{ steps.config.outputs.deployment-strategy }}
+      requires-approval: ${{ steps.config.outputs.requires-approval }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Load environment configuration
+        id: config
+        run: |
+          echo "📋 Loading configuration for ${{ github.event.inputs.target_environment }}"
+          
+          case "${{ github.event.inputs.target_environment }}" in
+            "development")
+              cat > env-config.json << EOF
+              {
+                "name": "development",
+                "url": "https://dev.example.com",
+                "database": "dev-db",
+                "debug": true,
+                "log_level": "debug",
+                "replicas": 1,
+                "resources": {"cpu": "100m", "memory": "256Mi"},
+                "deployment_strategy": "recreate",
+                "health_check_timeout": 30,
+                "requires_approval": false
+              }
+          EOF
+              ;;
+            "staging")
+              cat > env-config.json << EOF
+              {
+                "name": "staging",
+                "url": "https://staging.example.com",
+                "database": "staging-db",
+                "debug": false,
+                "log_level": "info",
+                "replicas": 2,
+                "resources": {"cpu": "200m", "memory": "512Mi"},
+                "deployment_strategy": "rolling",
+                "health_check_timeout": 60,
+                "requires_approval": false
+              }
+          EOF
+              ;;
+            "production")
+              cat > env-config.json << EOF
+              {
+                "name": "production",
+                "url": "https://example.com",
+                "database": "prod-db",
+                "debug": false,
+                "log_level": "warning",
+                "replicas": 5,
+                "resources": {"cpu": "500m", "memory": "1Gi"},
+                "deployment_strategy": "blue-green",
+                "health_check_timeout": 120,
+                "requires_approval": true
+              }
+          EOF
+              ;;
+            *)
+              echo "❌ Unknown environment: ${{ github.event.inputs.target_environment }}"
+              exit 1
+              ;;
+          esac
+          
+          # Output configuration
+          config=$(cat env-config.json | jq -c .)
+          echo "environment-config=$config" >> $GITHUB_OUTPUT
+          echo "deployment-strategy=$(jq -r '.deployment_strategy' env-config.json)" >> $GITHUB_OUTPUT
+          echo "requires-approval=$(jq -r '.requires_approval' env-config.json)" >> $GITHUB_OUTPUT
+          
+          echo "Environment configuration loaded:"
+          cat env-config.json | jq .
+      
+      - name: Validate environment access
+        run: |
+          echo "🔐 Validating access to ${{ github.event.inputs.target_environment }}"
+          
+          # Simulate environment access validation
+          case "${{ github.event.inputs.target_environment }}" in
+            "development")
+              echo "✅ Development environment access validated"
+              ;;
+            "staging")
+              echo "✅ Staging environment access validated"
+              ;;
+            "production")
+              echo "✅ Production environment access validated"
+              echo "⚠️ Production deployment requires approval"
+              ;;
+          esac
+
+  # Job 2: Health check action
+  health-check:
+    name: Environment Health Check
+    runs-on: ubuntu-latest
+    needs: environment-validation
+    if: github.event.inputs.action == 'health-check'
+    environment:
+      name: ${{ github.event.inputs.target_environment }}
+    
+    steps:
+      - name: Run health checks
+        run: |
+          echo "🏥 Running health checks for ${{ github.event.inputs.target_environment }}"
+          
+          config='${{ needs.environment-validation.outputs.environment-config }}'
+          url=$(echo $config | jq -r '.url')
+          timeout=$(echo $config | jq -r '.health_check_timeout')
+          
+          echo "Checking endpoint: $url"
+          echo "Timeout: ${timeout}s"
+          
+          # Simulate health checks
+          checks=(
+            "Application endpoint"
+            "Database connectivity" 
+            "External service integrations"
+            "SSL certificate validity"
+            "DNS resolution"
+            "Load balancer status"
+          )
+          
+          echo "## Health Check Results" > health-check-report.txt
+          echo "Environment: ${{ github.event.inputs.target_environment }}" >> health-check-report.txt
+          echo "Timestamp: $(date)" >> health-check-report.txt
+          echo "" >> health-check-report.txt
+          
+          all_healthy=true
+          for check in "${checks[@]}"; do
+            # Simulate check with random success/failure
+            if [[ $((RANDOM % 10)) -lt 9 ]]; then
+              echo "✅ $check: HEALTHY" | tee -a health-check-report.txt
+            else
+              echo "❌ $check: UNHEALTHY" | tee -a health-check-report.txt
+              all_healthy=false
+            fi
+            sleep 1
+          done
+          
+          if $all_healthy; then
+            echo "✅ All health checks passed"
+          else
+            echo "⚠️ Some health checks failed"
+          fi
+      
+      - name: Upload health check results
+        uses: actions/upload-artifact@v3
+        with:
+          name: health-check-${{ github.event.inputs.target_environment }}
+          path: health-check-report.txt
+
+  # Job 3: Deploy action
+  deploy-to-environment:
+    name: Deploy to ${{ github.event.inputs.target_environment }}
+    runs-on: ubuntu-latest
+    needs: environment-validation
+    if: github.event.inputs.action == 'deploy'
+    environment:
+      name: ${{ github.event.inputs.target_environment }}
+      url: ${{ fromJson(needs.environment-validation.outputs.environment-config).url }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup deployment environment
+        run: |
+          config='${{ needs.environment-validation.outputs.environment-config }}'
+          
+          echo "🚀 Setting up deployment to ${{ github.event.inputs.target_environment }}"
+          echo "Configuration:"
+          echo $config | jq .
+          
+          # Extract configuration values
+          debug=$(echo $config | jq -r '.debug')
+          log_level=$(echo $config | jq -r '.log_level')
+          replicas=$(echo $config | jq -r '.replicas')
+          
+          # Create environment file
+          cat > deployment.env << EOF
+          ENVIRONMENT=${{ github.event.inputs.target_environment }}
+          DEBUG=$debug
+          LOG_LEVEL=$log_level
+          REPLICAS=$replicas
+          DEPLOYED_BY=${{ github.actor }}
+          DEPLOYMENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          GIT_COMMIT=${{ github.sha }}
+          GIT_BRANCH=${{ github.ref_name }}
+          EOF
+          
+          echo "Environment configuration:"
+          cat deployment.env
+      
+      - name: Execute deployment strategy
+        run: |
+          strategy="${{ needs.environment-validation.outputs.deployment-strategy }}"
+          config='${{ needs.environment-validation.outputs.environment-config }}'
+          replicas=$(echo $config | jq -r '.replicas')
+          
+          echo "📦 Executing $strategy deployment strategy"
+          
+          case "$strategy" in
+            "recreate")
+              echo "♻️ Recreate deployment:"
+              echo "1. Stopping all $replicas instances..."
+              sleep 2
+              echo "2. Deploying new version..."
+              sleep 3
+              echo "3. Starting $replicas new instances..."
+              sleep 2
+              ;;
+            "rolling")
+              echo "🔄 Rolling deployment:"
+              for i in $(seq 1 $replicas); do
+                echo "Rolling update instance $i/$replicas..."
+                sleep 1
+              done
+              ;;
+            "blue-green")
+              echo "🔵🟢 Blue-Green deployment:"
+              echo "1. Deploying to green environment ($replicas instances)..."
+              sleep 3
+              echo "2. Health checking green environment..."
+              sleep 2
+              echo "3. Switching traffic to green..."
+              sleep 1
+              echo "4. Decommissioning blue environment..."
+              sleep 2
+              ;;
+          esac
+          
+          echo "✅ Deployment completed successfully!"
+      
+      - name: Post-deployment verification
+        run: |
+          echo "🔍 Running post-deployment verification"
+          
+          config='${{ needs.environment-validation.outputs.environment-config }}'
+          url=$(echo $config | jq -r '.url')
+          
+          # Simulate verification steps
+          echo "Verifying deployment at $url"
+          echo "✅ Application is responding"
+          echo "✅ Database connections verified"
+          echo "✅ All services healthy"
+          
+          echo "## Deployment Summary" > deployment-summary.txt
+          echo "Environment: ${{ github.event.inputs.target_environment }}" >> deployment-summary.txt
+          echo "Strategy: ${{ needs.environment-validation.outputs.deployment-strategy }}" >> deployment-summary.txt
+          echo "Status: SUCCESS" >> deployment-summary.txt
+          echo "Deployed by: ${{ github.actor }}" >> deployment-summary.txt
+          echo "Timestamp: $(date)" >> deployment-summary.txt
+      
+      - name: Upload deployment results
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-${{ github.event.inputs.target_environment }}
+          path: |
+            deployment.env
+            deployment-summary.txt
+
+  # Job 4: Promote between environments
+  promote-environment:
+    name: Promote from ${{ github.event.inputs.source_environment }} to ${{ github.event.inputs.target_environment }}
+    runs-on: ubuntu-latest
+    needs: environment-validation
+    if: github.event.inputs.action == 'promote'
+    
+    steps:
+      - name: Validate promotion
+        run: |
+          echo "🔄 Validating promotion from ${{ github.event.inputs.source_environment }} to ${{ github.event.inputs.target_environment }}"
+          
+          # Define valid promotion paths
+          case "${{ github.event.inputs.source_environment }}-${{ github.event.inputs.target_environment }}" in
+            "development-staging"|"staging-production")
+              echo "✅ Valid promotion path"
+              ;;
+            *)
+              echo "❌ Invalid promotion path"
+              echo "Valid paths: development → staging → production"
+              exit 1
+              ;;
+          esac
+      
+      - name: Execute promotion
+        run: |
+          echo "🚀 Promoting from ${{ github.event.inputs.source_environment }} to ${{ github.event.inputs.target_environment }}"
+          
+          # Simulate promotion process
+          echo "1. Capturing current state of ${{ github.event.inputs.source_environment }}..."
+          sleep 2
+          echo "2. Running promotion tests..."
+          sleep 3
+          echo "3. Deploying to ${{ github.event.inputs.target_environment }}..."
+          sleep 4
+          echo "4. Verifying promotion..."
+          sleep 2
+          
+          echo "✅ Promotion completed successfully!"
+
+  # Job 5: Rollback action
+  rollback-environment:
+    name: Rollback ${{ github.event.inputs.target_environment }}
+    runs-on: ubuntu-latest
+    needs: environment-validation
+    if: github.event.inputs.action == 'rollback'
+    environment:
+      name: ${{ github.event.inputs.target_environment }}
+    
+    steps:
+      - name: Execute rollback
+        run: |
+          echo "🔙 Rolling back ${{ github.event.inputs.target_environment }}"
+          
+          config='${{ needs.environment-validation.outputs.environment-config }}'
+          strategy=$(echo $config | jq -r '.deployment_strategy')
+          
+          echo "Using $strategy rollback strategy"
+          
+          case "$strategy" in
+            "blue-green")
+              echo "🔵🟢 Blue-Green rollback:"
+              echo "1. Switching traffic back to blue environment..."
+              sleep 2
+              echo "2. Verifying blue environment health..."
+              sleep 1
+              ;;
+            "rolling")
+              echo "🔄 Rolling back to previous version:"
+              echo "1. Rolling back instances one by one..."
+              sleep 3
+              ;;
+            "recreate")
+              echo "♻️ Recreate rollback:"
+              echo "1. Deploying previous version..."
+              sleep 2
+              ;;
+          esac
+          
+          echo "✅ Rollback completed successfully!"
+
+  # Job 6: Maintenance mode
+  maintenance-mode:
+    name: Maintenance Mode for ${{ github.event.inputs.target_environment }}
+    runs-on: ubuntu-latest
+    needs: environment-validation
+    if: github.event.inputs.action == 'maintenance'
+    environment:
+      name: ${{ github.event.inputs.target_environment }}
+    
+    steps:
+      - name: Enable maintenance mode
+        run: |
+          echo "🔧 Enabling maintenance mode for ${{ github.event.inputs.target_environment }}"
+          
+          window="${{ github.event.inputs.maintenance_window }}"
+          echo "Maintenance window: ${window} minutes"
+          
+          # Simulate maintenance tasks
+          echo "1. Enabling maintenance page..."
+          sleep 2
+          echo "2. Draining traffic..."
+          sleep 1
+          echo "3. Running maintenance tasks..."
+          sleep 3
+          echo "4. Updating system components..."
+          sleep 2
+          
+          echo "✅ Maintenance mode enabled"
+          echo "🕒 Scheduled duration: ${window} minutes"
+      
+      - name: Schedule maintenance completion
+        run: |
+          window="${{ github.event.inputs.maintenance_window }}"
+          end_time=$(date -d "+${window} minutes" "+%Y-%m-%d %H:%M:%S UTC")
+          
+          echo "⏰ Maintenance window scheduled to end at: $end_time"
+          echo "🔔 Set reminder to disable maintenance mode"
+          
+          # Create maintenance summary
+          cat > maintenance-summary.txt << EOF
+          # Maintenance Mode Summary
+          
+          **Environment:** ${{ github.event.inputs.target_environment }}
+          **Started by:** ${{ github.actor }}
+          **Start time:** $(date)
+          **Duration:** $window minutes
+          **Scheduled end:** $end_time
+          **Status:** ACTIVE
+          
+          ## Tasks Completed
+          - [x] Maintenance page enabled
+          - [x] Traffic drained
+          - [x] System maintenance started
+          - [ ] Maintenance completion (scheduled)
+          - [ ] Traffic restoration (scheduled)
+          
+          ## Next Steps
+          1. Monitor maintenance progress
+          2. Disable maintenance mode when complete
+          3. Verify system functionality
+          4. Restore full traffic
+          EOF
+      
+      - name: Upload maintenance report
+        uses: actions/upload-artifact@v3
+        with:
+          name: maintenance-${{ github.event.inputs.target_environment }}
+          path: maintenance-summary.txt
+
+  # Job 7: Environment summary
+  environment-summary:
+    name: Environment Management Summary
+    runs-on: ubuntu-latest
+    needs: [environment-validation, health-check, deploy-to-environment, promote-environment, rollback-environment, maintenance-mode]
+    if: always()
+    
+    steps:
+      - name: Generate environment summary
+        run: |
+          echo "## 🏗️ Environment Management Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Action Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Environment:** ${{ github.event.inputs.target_environment }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ github.event.inputs.source_environment }}" != "" ]]; then
+            echo "- **Source Environment:** ${{ github.event.inputs.source_environment }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "- **Executed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment Validation | ${{ needs.environment-validation.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Health Check | ${{ needs.health-check.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy | ${{ needs.deploy-to-environment.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Promote | ${{ needs.promote-environment.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rollback | ${{ needs.rollback-environment.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Maintenance | ${{ needs.maintenance-mode.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Environment-specific information
+          config='${{ needs.environment-validation.outputs.environment-config }}'
+          if [[ "$config" != "null" && "$config" != "" ]]; then
+            echo "### Environment Configuration" >> $GITHUB_STEP_SUMMARY
+            echo "- **URL:** $(echo $config | jq -r '.url')" >> $GITHUB_STEP_SUMMARY
+            echo "- **Replicas:** $(echo $config | jq -r '.replicas')" >> $GITHUB_STEP_SUMMARY
+            echo "- **Strategy:** $(echo $config | jq -r '.deployment_strategy')" >> $GITHUB_STEP_SUMMARY
+            echo "- **Debug Mode:** $(echo $config | jq -r '.debug')" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action completed at:** $(date)" >> $GITHUB_STEP_SUMMARY
